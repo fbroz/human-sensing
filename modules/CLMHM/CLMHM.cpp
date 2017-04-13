@@ -76,7 +76,8 @@ YARP_DECLARE_PLUGINS(icubmod)
    #define STATE_STILL 3
 **/
 
-#define CYCLING_TIME 50.0       // the time elapsed between each gaze switching other possible values (30,50,70)
+#define CYCLING_TIME 10.0 // the time elapsed between each gaze switching in not real seconds
+
 // --------------------------------------------------------------
 // ------------------
 // ----- Macros -----
@@ -97,17 +98,24 @@ YARP_DECLARE_PLUGINS(icubmod)
   abort();
 }
 
+//returns difference in seconds
 double diffclock(clock_t clock1,clock_t clock2)
 {
   double diffticks=clock1-clock2;
-  double diffms=(diffticks*10)/CLOCKS_PER_SEC;
-  return diffms;
+  double diffs=diffticks/CLOCKS_PER_SEC;
+  return diffs;
 }
 
 
 
 #define FATAL_STREAM( stream )					\
   printErrorAndAbort( std::string( "Fatal error: " ) + stream )
+
+
+
+
+
+
 // --------------------------------------------------------------
 // ----------------------
 // ----- Namespaces -----
@@ -206,6 +214,7 @@ private:
   double timeToKeepAGaze;
   bool oneIter;
 
+  enum GazeState {none, lefteye, righteye, mouth, left, up, down, right};
 
 public:
 
@@ -358,17 +367,6 @@ public:
 	igaze->storeContext(&startup_context_id);
 
       }
-
-    // create a normal distribution PDF for timing the gaze change
-    /*
-      generator;
-      std::normal_distribution<double> distribution(5.0,1.0);
-      beginTime = clock();
-      timeToKeepAGaze = distribution(generator);
-
-    */
-
-
 
     gazeChangeFlag = 1;
     oldGazeChangeFlag = gazeChangeFlag;
@@ -579,7 +577,7 @@ public:
 	//face outline?
 	//nose?
 	shape_3D = clm_model->GetShape(fx, fy, cx, cy);
-	cout <<  "shape matrix size : "<<shape_3D.rows <<" " << shape_3D.cols << endl; 
+	//cout <<  "shape matrix size : "<<shape_3D.rows <<" " << shape_3D.cols << endl; 
 	//int ii = 68;
 	//double xx = clm_model->detected_landmarks.at<double>(ii);
 	//double yy = clm_model->detected_landmarks.at<double>(ii+clm_model->pdm.NumberOfPoints());
@@ -676,11 +674,11 @@ public:
 	pose_mouth[2] = mean_z_mouth3d / 1000;
 	pose_mouth[3] = 1;
 
-	cout << "Mouth 3d position " << mean_x_mouth3d << " " << mean_y_mouth3d << " " << mean_z_mouth3d << endl;
-	cout << "Left eye 3d position " << mean_x_left_eye3d << " " << mean_y_left_eye3d << " " << mean_z_left_eye3d << endl;
-	cout << "Right eye 3d position " << mean_x_right_eye3d << " " << mean_y_right_eye3d << " " << mean_z_right_eye3d << endl;
+	//cout << "Mouth 3d position " << mean_x_mouth3d << " " << mean_y_mouth3d << " " << mean_z_mouth3d << endl;
+	//cout << "Left eye 3d position " << mean_x_left_eye3d << " " << mean_y_left_eye3d << " " << mean_z_left_eye3d << endl;
+	//cout << "Right eye 3d position " << mean_x_right_eye3d << " " << mean_y_right_eye3d << " " << mean_z_right_eye3d << endl;
 
-	cout << "Pose 3d position " << pose_estimate_CLM[0] << " " << pose_estimate_CLM[1] << " " << pose_estimate_CLM[2] << endl; //" " << pose_estimate_CLM[4] << " " << pose_estimate_CLM[5] << endl;
+	//cout << "Pose 3d position " << pose_estimate_CLM[0] << " " << pose_estimate_CLM[1] << " " << pose_estimate_CLM[2] << endl; //" " << pose_estimate_CLM[4] << " " << pose_estimate_CLM[5] << endl;
 
 
 	Point featurePointLE((int)mean_xx_left_eye, (int)mean_yy_left_eye);
@@ -808,20 +806,6 @@ public:
     string fpsSt("FPS:");
     fpsSt += fpsC;
     cv::putText(captured_image, fpsSt, cv::Point(10,20), CV_FONT_HERSHEY_SIMPLEX, 0.5, CV_RGB(255,0,0));		
-		
-    /*
-      if(!clm_parameters->quiet_mode)
-      {
-      namedWindow("tracking_result",1);		
-      imshow("tracking_result", captured_image);
-
-      if(!depth_image.empty())
-      {
-      imshow("depth", depth_image/2000.0);    // Division needed for visualisation purposes
-      }
-      }
-    */
-
     // Output the detected facial landmarks
     /*
       if(!landmark_output_files.empty())
@@ -859,135 +843,163 @@ public:
 
     //cout << "CLM Estimated pose and quaternion : "  << pose_estimate_CLM[0] << " " << pose_estimate_CLM[1] << " " << pose_estimate_CLM[2] << " " << pose_estimate_CLM[3] << " " << pose_estimate_CLM[4] << " " << pose_estimate_CLM[5] << endl;
 
-    if (runGaze)
-      {
-        if (detection_success)
-	  {
-            if (abs(pose_estimate_CLM[0]) < 1000 & abs(pose_estimate_CLM[1])< 1000 & abs(pose_estimate_CLM[2]) < 1000 )
-	      {
+    if (runGaze) {
+      if ((detection_success) && (abs(pose_estimate_CLM[0]) < 1000 & abs(pose_estimate_CLM[1])< 1000 & abs(pose_estimate_CLM[2]) < 1000 )) {
+	//FRANK: This seems to get and compute the pose for individual 
+	//features, but this isn't used to generate the poses that
+	//the robot looks at (it is done by adding stuff to the head
+	//center pose)
+	
+	//TODO: Move feature calculation from drawing section to here
+	
+	
+	// transforming the pose w.r.t the root of the robot
+	igaze->getLeftEyePose(pose_act,ori_act);
+	H = axis2dcm(ori_act);
+	H(0,3) = pose_act[0];
+	H(1,3) = pose_act[1];
+	H(2,3) = pose_act[2];
+	
+	//this should be the center of the face, right?
+	pose_clm.resize(4);
+	pose_clm[0] = pose_estimate_CLM[0] / 1000; //convert to [m]
+	pose_clm[1] = pose_estimate_CLM[1] / 1000;
+	pose_clm[2] = pose_estimate_CLM[2] / 1000;
+	pose_clm[3] = 1;
+	
+	
+	// ============== Method 2 - using elapsed time =====================
+	endTime = clock();
+	// start timing
 
-		//FRANK: This seems to get and compute the pose for individual 
-		//features, but this isn't used to generate the poses that
-		//the robot looks at (it is done by adding stuff to the head
-		//center pose)
+	std::default_random_engine generator(std::random_device{}());
+	std::uniform_int_distribution<int> distribution(1,7); // use (1,3) for using only eyes and mouth // use (1,5) for 5 points
+	std::uniform_real_distribution<double> real_distribution(0,1);
+	
+	double weights[] = {1, 1, 1,0.5,0.2};
+	
+	
+	// cout << "time to keep : " << 3 + timeToKeepAGaze << " diffclock : " << diffclock(endTime,beginTime) << endl;
+	double currentDiff = abs(diffclock(endTime,beginTime));
+	if (currentDiff > CYCLING_TIME) {
+	  gazeChangeFlag = distribution(generator);
+	  /*double rnd = real_distribution(generator);
+	  // if a random number is less than the weights of the extracted flag change it
+	  // this weighs the results according to the weight vector
+	  //
+	  while (rnd > weights[gazeChangeFlag-1])
+	    {
+	      gazeChangeFlag = distribution(generator);
+	    }
+	  
+	  // check for not having the previous rand again
+	  while (gazeChangeFlag == oldGazeChangeFlag)
+	    {
+	      gazeChangeFlag = distribution(generator); //disUniform(generatorUniform);
+	    }
+	  */
+	  oldGazeChangeFlag = gazeChangeFlag;
 
-		//TODO: Move feature calculation from drawing section to here
+	  cout << "################ Changing Gaze >>> " << "timing : " << currentDiff << " looking at : ";
 
-
-                // transforming the pose w.r.t the root of the robot
-                igaze->getLeftEyePose(pose_act,ori_act);
-                H = axis2dcm(ori_act);
-                H(0,3) = pose_act[0];
-                H(1,3) = pose_act[1];
-                H(2,3) = pose_act[2];
-
-                // ============== Method 2 - using elapsed time =====================
-                endTime = clock();
-                // cout << "Flag : " << gazeChangeFlag << endl;
-                // start timing
-
-                // for normal distro
-                //timeToKeepAGaze = distribution(generator);
-
-                // for uniform
-                //disUniform(generatorUniform);
-                //std::random_device rd;
-                std::default_random_engine generator(std::random_device{}());
-                std::uniform_int_distribution<int> distribution(1,3); // use (1,3) for using only eyes and mouth // use (1,5) for 5 points
-                std::uniform_real_distribution<double> real_distribution(0,1);
-
-                double weights[] = {1, 1, 1,0.5,0.2};
-
-
-                // cout << "time to keep : " << 3 + timeToKeepAGaze << " diffclock : " << diffclock(endTime,beginTime) << endl;
-                double currentDiff = abs(diffclock(endTime,beginTime));
-                if (currentDiff > CYCLING_TIME)
-		  {
-                    gazeChangeFlag = distribution(generator);
-                    double rnd = real_distribution(generator);
-                    // if a random number is less than the weights of the extracted flag change it
-                    // this weighs the results according to the weight vector
-                    //
-                    while (rnd > weights[gazeChangeFlag-1])
-		      {
-                        gazeChangeFlag = distribution(generator);
-		      }
-
-                    // check for not having the previous rand again
-                    while (gazeChangeFlag == oldGazeChangeFlag)
-		      {
-                        gazeChangeFlag = distribution(generator); //disUniform(generatorUniform);
-		      }
-                    oldGazeChangeFlag = gazeChangeFlag;
-
-                    beginTime = clock();
-                    endTime = beginTime; //clock();
-                    currentDiff = 0.0;
-
-                    cout << "################ Changing Gaze >>> " << "timing : " << currentDiff << " looking at : " << gazeChangeFlag << " chance: " << rnd << endl;
-
-                    /*
-                    // cycling through different gaze flags
-
-                    if (gazeChangeFlag == 1)
-                    {
-		    gazeChangeFlag = 2;
-                    }
-                    else if (gazeChangeFlag == 2 & ~oneIter)
-                    {
-		    gazeChangeFlag = 1;
-		    oneIter = ~oneIter;
-                    }
-                    else if (gazeChangeFlag == 2 & oneIter)
-                    {
-		    gazeChangeFlag = 3;
-		    oneIter = ~oneIter;
-                    }
-
-                    else if (gazeChangeFlag == 3)
-                    {
-		    gazeChangeFlag = 1;
-                    }
-                    */
-
-
-                    //timeToKeepAGaze = distribution(generator);
-                    //cout << "||||||||||| Time for gazing" << timeToKeepAGaze << endl;
-
-		  }
-
-
-
-                if (gazeChangeFlag == 1)
-		  {
-                    cout << "looking at left eye " <<endl;
-                    pose_robot = H * pose_left_eye;
-		  }
-                else if (gazeChangeFlag == 2)
-		  {
-                    cout << "looking at right eye "  <<endl;
-                    pose_robot = H * pose_right_eye;
-		  }
-                else if (gazeChangeFlag == 3)
-		  {
-                    cout << "looking at mouth "  <<endl;
-                    pose_robot = H * pose_mouth;
-		  }
-
-
-                Bottle& fp = posePort.prepare();
-                fp.clear();
-                fp.addDouble(pose_robot[0]);
-                fp.addDouble(pose_robot[1]);
-                fp.addDouble(pose_robot[2]);
-                posePort.write();
-                cout << "pose robot:" << pose_robot[0] << " , " << pose_robot[1] << " , " << pose_robot[2] << endl;
-
-
-
-	      }
+	  switch(gazeChangeFlag){
+	  case lefteye:
+	    cout << "left eye" << endl;
+	    break;
+	  case righteye:
+	    cout << "right eye" << endl;
+	    break;
+	  case mouth:
+	    cout << "mouth" << endl;
+	    break;
+	  case left:
+	    cout << "left" << endl;
+	    break;
+	  case right:
+	    cout << "right" << endl;
+	    break;
+	  case up:
+	    cout << "up" << endl;
+	    break;
+	  case down:
+	    cout << "down" << endl;
+	    break;
 	  }
+	  
+	  beginTime = clock();
+	  endTime = beginTime; //clock();
+	  currentDiff = 0.0;
+	  
+
+	  
+	} //if (currentDiff > CYCLING_TIME)
+	
+      } else {
+	oldGazeChangeFlag = gazeChangeFlag;
+	gazeChangeFlag = none;
+      } //if detection_success
+      
+	fp.resize(4);      
+      
+      switch(gazeChangeFlag){
+      case none:
+	//these coordinates taken from the shutdown fixation, look straight ahead
+	fp[0]=-1;
+	fp[1]=0;
+	fp[2]=0.3;
+	fp[3]=1;
+	//pose_robot = H * fp; //don't need to do the transformation from the left eye, correct?
+	pose_robot = fp;
+	break;
+      case lefteye:
+	pose_robot = H * pose_left_eye;
+	break;
+      case righteye:
+	pose_robot = H * pose_right_eye;
+	break;
+      case mouth:
+	pose_robot = H * pose_mouth;
+	break;
+      case up:
+	fp[0] = pose_mouth[0];
+	fp[1] = pose_mouth[1] - 0.15;
+	fp[2] = pose_mouth[2];
+	fp[3] = pose_mouth[3];
+	pose_robot = H * fp;
+	break;
+      case down:
+	fp[0] = pose_mouth[0];
+	fp[1] = pose_mouth[1] + 0.05;
+	fp[2] = pose_mouth[2];
+	fp[3] = pose_mouth[3];
+	pose_robot = H * fp;
+	break;
+      case left:
+	fp[0] = pose_left_eye[0] + 0.1;
+	fp[1] = pose_left_eye[1];
+	fp[2] = pose_left_eye[2];
+	fp[3] = pose_left_eye[3];
+	pose_robot = H * fp;
+	break;
+      case right:
+	fp[0] = pose_right_eye[0] - 0.1;
+	fp[1] = pose_right_eye[1];
+	fp[2] = pose_right_eye[2];
+	fp[3] = pose_right_eye[3];
+	pose_robot = H * fp;
+	break;
       }
+      
+      Bottle& fpb = posePort.prepare();
+      fpb.clear();
+      fpb.addDouble(pose_robot[0]);
+      fpb.addDouble(pose_robot[1]);
+      fpb.addDouble(pose_robot[2]);
+      posePort.write();
+      //cout << "pose robot:" << pose_robot[0] << " , " << pose_robot[1] << " , " << pose_robot[2] << endl;
+      
+    } //if runGaze
+    
     //if(!tracked_videos_output.empty())
     //{
     //    writerFace << captured_image;     // output the tracked video
@@ -1012,7 +1024,7 @@ public:
 	fp.resize(3);
 	fp[0]=-1;
 	fp[1]=0;
-	fp[2]=0.4;
+	fp[2]=0.3;
 
 	igaze->lookAtFixationPoint(fp); // move the gaze to the desired fixation point
 	igaze->waitMotionDone();
