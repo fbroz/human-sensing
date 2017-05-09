@@ -107,6 +107,15 @@ double diffclock(clock_t clock1,clock_t clock2)
 }
 
 
+const std::string currentDateTime() {
+  time_t now = time(0);
+  struct tm tstruct;
+  char buf[80];
+  tstruct = *localtime(&now);
+  strftime(buf,sizeof(buf),"%Y-%m-%d.%H.%M.%S", &tstruct);
+  return buf;
+}
+
 
 #define FATAL_STREAM( stream )					\
   printErrorAndAbort( std::string( "Fatal error: " ) + stream )
@@ -166,7 +175,8 @@ private:
   int state, startup_context_id, jnt;
   int thickness;
   int gazeChangeFlag, oldGazeChangeFlag;
-
+  int gazeMode;
+  
   float fx,fy,cx,cy; 							// parameters of the camera
 
   string current_file;
@@ -180,6 +190,7 @@ private:
   CLMTracker::CLMParameters* clm_parameters;
   CLMTracker::CLM* clm_model;
 
+  std::ofstream facestate_output_file;
   std::ofstream pose_output_file;
   std::ofstream landmarks_output_file;	
   std::ofstream landmarks_3D_output_file;
@@ -201,8 +212,8 @@ private:
   Vector pose_left_eye, pose_right_eye, pose_mouth; //for storing facial feature positions
   Matrix H;                       // transformation matrx
 
-  bool modelControl;         //whether to use Markov chain to pick gaze target
-  std::ifstream model_control_file; //the file that contains the control matrix
+  //bool modelControl;         //whether to use Markov chain to pick gaze target
+  //std::ifstream model_control_file; //the file that contains the control matrix
 
   //std::default_random_engine generator;
   //std::normal_distribution<double> distribution;
@@ -214,7 +225,11 @@ private:
   double timeToKeepAGaze;
   bool oneIter;
 
-  enum GazeState {none, lefteye, righteye, mouth, left, up, down, right};
+
+  enum GazeMode {fixed, random, model};
+  const int NUM_GAZE_STATES = 7;
+  //state order must be same as the order used for the discrete distributions
+  enum GazeState {none, mouth, lefteye, righteye, left, right, up, down};
 
 public:
 
@@ -232,6 +247,22 @@ public:
   bool configure(yarp::os::ResourceFinder &rf)
   {
 
+
+    ConstString gmode = rf.find("mode").asString();
+    if(gmode == "model") {
+      cout << "Using model-based gaze" << endl;
+      gazeMode = model;
+    } else if(gmode == "random") {
+      cout << "Using random gaze" << endl;
+	gazeMode = random;
+    } else if(gmode == "fixed") {
+	cout << "Using fixed gaze" << endl;
+	gazeMode = fixed;
+    } else {
+      cout << "No gaze mode specified, using fixed gaze (model, random, fixed) possible" << endl;
+      gazeMode = fixed;
+    }
+    
     // --- open the ports ---
     ok2 = imageIn.open("/clmgaze/image/in");
     ok2 = ok2 && imageOut.open("/clmgaze/image/out");
@@ -330,7 +361,9 @@ public:
 	landmarks_3D_output_file.open(landmark_3D_output_files[f_n], ios_base::out);
       }
 
-    modelControl = false;
+    facestate_output_file.open("face_states"+currentDateTime()+".txt", ios_base::out);
+    
+    //modelControl = false;
     //Frank: read in the matrix for mutual gaze control here
 	
     INFO_STREAM( "Starting tracking");
@@ -873,73 +906,119 @@ public:
 	// start timing
 
 	std::default_random_engine generator(std::random_device{}());
-	std::uniform_int_distribution<int> distribution(1,7); // use (1,3) for using only eyes and mouth // use (1,5) for 5 points
+	std::uniform_int_distribution<int> uni_distribution(1,NUM_GAZE_STATES); // use (1,3) for using only eyes and mouth // use (1,5) for 5 points
 	std::uniform_real_distribution<double> real_distribution(0,1);
-	
-	double weights[] = {1, 1, 1,0.5,0.2};
-	
-	
+
+	//here are all the model distribution parameters
+	std::discrete_distribution<int> lefteye_distribution({49,852,62,10,1,1,25});
+	std::discrete_distribution<int> righteye_distribution({34,31,885,1,7,3,39});
+	std::discrete_distribution<int> mouth_distribution({882,38,47,5,6,20,1});
+	std::discrete_distribution<int> up_distribution({50,3,8,11,15,905,10});
+	std::discrete_distribution<int> down_distribution({3,30,83,9,11,5,860});
+	std::discrete_distribution<int> left_distribution({15,20,4,922,4,15,20});
+	std::discrete_distribution<int> right_distribution({21,3,34,5,892,20,25});
+	std::discrete_distribution<int> rel_distribution({282468,214800,414205,92843,79455,113194,206946});
+
+	//double weights[] = {1, 1, 1,0.5,0.2};
 	// cout << "time to keep : " << 3 + timeToKeepAGaze << " diffclock : " << diffclock(endTime,beginTime) << endl;
+	//move this to inside the mode switch so that a new state is picked each timestep from the model
+	//or recompute the weights to ignore self-transitions
 	double currentDiff = abs(diffclock(endTime,beginTime));
-	if (currentDiff > CYCLING_TIME) {
-	  gazeChangeFlag = distribution(generator);
-	  /*double rnd = real_distribution(generator);
-	  // if a random number is less than the weights of the extracted flag change it
-	  // this weighs the results according to the weight vector
-	  //
-	  while (rnd > weights[gazeChangeFlag-1])
-	    {
-	      gazeChangeFlag = distribution(generator);
-	    }
+
+	if (gazeMode == model) {
+	  if (gazeChangeFlag == none) {
+	    gazeChangeFlag = rel_distribution(generator) + 1; 
+	  } else {
+	    switch(gazeChangeFlag){
+	    case lefteye:
+	      gazeChangeFlag = lefteye_distribution(generator)+1;
+	      break;
+	    case righteye:
+	      gazeChangeFlag = righteye_distribution(generator)+1;
+	      break;
+	    case mouth:
+	      gazeChangeFlag = mouth_distribution(generator)+1;
+	      break;
+	    case left:
+	      gazeChangeFlag = left_distribution(generator)+1;
+	      break;
+	    case right:
+	      gazeChangeFlag = right_distribution(generator)+1;
+	      break;
+	    case up:
+	      gazeChangeFlag = up_distribution(generator)+1;
+	      break;
+	    case down:
+	      gazeChangeFlag = down_distribution(generator)+1;
+	      break;
+	    };
+	  }
+
+	} else {
+	  if ((currentDiff > CYCLING_TIME) || (gazeChangeFlag == none)) {
+	    
+	    switch(gazeMode){
+	    case random:
+	      gazeChangeFlag = uni_distribution(generator);
+	      break;
+	    case fixed:
+	      gazeChangeFlag++;
+	      if (gazeChangeFlag > NUM_GAZE_STATES)
+		gazeChangeFlag = 1;
+	      break;
+	    };
 	  
-	  // check for not having the previous rand again
-	  while (gazeChangeFlag == oldGazeChangeFlag)
-	    {
-	      gazeChangeFlag = distribution(generator); //disUniform(generatorUniform);
-	    }
-	  */
-	  oldGazeChangeFlag = gazeChangeFlag;
+	    oldGazeChangeFlag = gazeChangeFlag;
+	    beginTime = clock();
+	    endTime = beginTime; //clock();
+	    currentDiff = 0.0;
+	  } //if (currentDiff > CYCLING_TIME) 
+	} //if (gazemode == model)  
 
-	  cout << "################ Changing Gaze >>> " << "timing : " << currentDiff << " looking at : ";
-
+	cout << "################ Changing Gaze >>> mode: " << gazeMode <<  " state: "<< gazeChangeFlag << " timing : " << currentDiff << " looking at : ";
+	facestate_output_file << "################ Changing Gaze >>> state: "<< gazeChangeFlag << " timing : " << currentDiff << " looking at : ";
+	  
 	  switch(gazeChangeFlag){
+	  case none:
+	    cout << "none" << endl;
+	    facestate_output_file << "none" << endl;
+	    break;
 	  case lefteye:
 	    cout << "left eye" << endl;
+	    facestate_output_file << "left eye" << endl;
 	    break;
 	  case righteye:
 	    cout << "right eye" << endl;
+	    facestate_output_file << "right eye" << endl;
 	    break;
 	  case mouth:
 	    cout << "mouth" << endl;
+	    facestate_output_file << "mouth" << endl;
 	    break;
 	  case left:
 	    cout << "left" << endl;
+	    facestate_output_file << "left" << endl;
 	    break;
 	  case right:
 	    cout << "right" << endl;
+	    facestate_output_file << "right" << endl;
 	    break;
 	  case up:
 	    cout << "up" << endl;
+	    facestate_output_file << "up" << endl;
 	    break;
 	  case down:
 	    cout << "down" << endl;
+	    facestate_output_file << "down" << endl;
 	    break;
 	  }
 	  
-	  beginTime = clock();
-	  endTime = beginTime; //clock();
-	  currentDiff = 0.0;
-	  
-
-	  
-	} //if (currentDiff > CYCLING_TIME)
-	
       } else {
 	oldGazeChangeFlag = gazeChangeFlag;
 	gazeChangeFlag = none;
       } //if detection_success
-      
-	fp.resize(4);      
+
+      fp.resize(4);      
       
       switch(gazeChangeFlag){
       case none:
@@ -1010,6 +1089,9 @@ public:
 
     return true;
   }
+
+
+  
   // --------------------------------------------------------------
   bool interruptModule()
   {
@@ -1055,6 +1137,7 @@ public:
     clm_model->Reset();               // reset the model
     pose_output_file.close();
     landmarks_output_file.close();
+    facestate_output_file.close();
 		
     return true;
   }	
@@ -1081,9 +1164,13 @@ int main (int argc, char **argv)
       return false;
     }
 
+
+
+  
   MyModule thisModule;
   ResourceFinder rf;
   cout<<"Object initiated!"<<endl;
+  rf.configure(argc,argv);
   thisModule.configure(rf);
   thisModule.runModule();
   return 0;
